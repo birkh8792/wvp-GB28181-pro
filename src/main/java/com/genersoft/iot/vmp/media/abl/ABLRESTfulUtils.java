@@ -1,9 +1,11 @@
 package com.genersoft.iot.vmp.media.abl;
 
+import cn.hutool.json.JSONUtil;
 import com.alibaba.fastjson2.JSON;
 import com.genersoft.iot.vmp.conf.exception.ControllerException;
 import com.genersoft.iot.vmp.media.abl.bean.ABLResult;
 import com.genersoft.iot.vmp.media.bean.MediaServer;
+import com.genersoft.iot.vmp.utils.JsonUtil;
 import com.genersoft.iot.vmp.vmanager.bean.ErrorCode;
 import okhttp3.*;
 import org.jetbrains.annotations.NotNull;
@@ -325,7 +327,8 @@ public class ABLRESTfulUtils {
         if (record != null && record) {
             param.put("enable_mp4", 1);
         }
-
+        String jsonStr = JSONUtil.toJsonStr(param);
+        logger.info("openRtpServer param : {}", jsonStr);
         String response = sendPost(mediaServer, "openRtpServer", param, null);
         if (response == null) {
             return 0;

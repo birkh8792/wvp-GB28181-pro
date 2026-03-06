@@ -71,7 +71,7 @@ public class ABLMediaNodeServerService implements IMediaNodeServerService {
     @Override
     public int createRTPServer(MediaServer mediaServer, String app, String stream, long ssrc, Integer port, Boolean onlyAuto, Boolean disableAudio, Boolean reUsePort, Integer tcpMode) {
         Boolean recordSip = userSetting.getRecordSip();
-        return ablresTfulUtils.openRtpServer(mediaServer, app, stream, 96, port, tcpMode, disableAudio?1:0, recordSip, false);
+        return ablresTfulUtils.openRtpServer(mediaServer, app, stream, 96, port, tcpMode, disableAudio?1:0, recordSip, MediaApp.JT1078.equals(app));
     }
 
     @Override
