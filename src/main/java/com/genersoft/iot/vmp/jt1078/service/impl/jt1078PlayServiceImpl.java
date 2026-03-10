@@ -1,5 +1,6 @@
 package com.genersoft.iot.vmp.jt1078.service.impl;
 
+import cn.hutool.json.JSONUtil;
 import com.genersoft.iot.vmp.common.CommonCallback;
 import com.genersoft.iot.vmp.common.StreamInfo;
 import com.genersoft.iot.vmp.common.VideoManagerConstants;
@@ -291,6 +292,9 @@ public class jt1078PlayServiceImpl implements Ijt1078PlayService {
         j9101.setTcpPort(port);
         j9101.setUdpPort(port);
         j9101.setType(type);
+
+        log.info("9101 cmd:{}", JSONUtil.toJsonStr(j9101));
+
         jt1078Template.startLive(phoneNumber, j9101, 6);
     }
 

@@ -585,6 +585,7 @@ export default {
           channelId: this.channelId
         }).then(data => {
             const streamInfo = data
+            //console.info(data)
             if (document.location.protocol.includes('https')) {
               this.startBroadcast(streamInfo.rtcs)
             } else {
