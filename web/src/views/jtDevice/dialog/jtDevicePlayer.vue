@@ -354,7 +354,6 @@
 
 <script>
 import rtcPlayer from '../../common/rtcPlayer.vue'
-import crypto from 'crypto'
 import jessibucaPlayer from '../../common/jessibuca.vue'
 import mediaInfo from '../../common/mediaInfo.vue'
 import H265web from '../../common/h265web.vue'
@@ -409,6 +408,10 @@ export default {
       streamInfo: null,
       broadcastMode: true,
       broadcastRtc: null,
+      broadcastWebSocket: null,
+      audioContext: null,
+      mediaStream: null,
+      scriptProcessor: null,
       broadcastStatus: -1 // -2 正在释放资源 -1 默认状态 0 等待接通 1 接通成功
     }
   },
@@ -510,7 +513,7 @@ export default {
       }
       this.videoUrl = ''
       this.showVideoDialog = false
-      this.stopBroadcast()
+      this.stopWebSocketAudio()
     },
     ptzCamera: function(command) {
       console.log('云台控制：' + command)
@@ -578,114 +581,112 @@ export default {
     broadcastStatusClick() {
       if (this.broadcastStatus === -1) {
         // 默认状态， 开始
-        this.broadcastStatus = 0
-        // 发起语音对讲
-        this.$store.dispatch('jtDevice/startTalk', {
-          phoneNumber: this.deviceId,
-          channelId: this.channelId
-        }).then(data => {
-            const streamInfo = data
-            //console.info(data)
-            if (document.location.protocol.includes('https')) {
-              this.startBroadcast(streamInfo.rtcs)
-            } else {
-              this.startBroadcast(streamInfo.rtc)
-            }
-          }).catch(error => {
-            this.$message.error(error)
-            this.broadcastStatus = -1
-          })
+        this.startWebSocketAudio()
       } else if (this.broadcastStatus === 1) {
-        this.broadcastStatus = -1
-        this.broadcastRtc.close()
+        this.stopWebSocketAudio()
       }
     },
-    startBroadcast(url) {
-      // 获取推流鉴权Key
-      this.$store.dispatch('user/getUserInfo')
-        .then((data) => {
-          if (data === null) {
-            this.broadcastStatus = -1
-            return
-          }
-          const pushKey = data.pushKey
-          // 获取推流鉴权KEY
-          url += '&sign=' + crypto.createHash('md5').update(pushKey, 'utf8').digest('hex')
-          console.log('开始语音喊话： ' + url)
-          this.broadcastRtc = new ZLMRTCClient.Endpoint({
-            debug: true, // 是否打印日志
-            zlmsdpUrl: url, // 流地址
-            simulecast: false,
-            useCamera: false,
-            audioEnable: true,
-            videoEnable: false,
-            recvOnly: false
+    startWebSocketAudio() {
+      this.broadcastStatus = 0
+      const wsUrl = 'ws://192.168.101.164:9298/webSocket/AUDIO_DATA/101'
+      console.log('连接 WebSocket:', wsUrl)
+
+      // 创建 WebSocket 连接
+      this.broadcastWebSocket = new WebSocket(wsUrl)
+      this.broadcastWebSocket.binaryType = 'arraybuffer'
+
+      this.broadcastWebSocket.onopen = () => {
+        console.log('WebSocket 连接成功')
+        this.captureAudioAndSend()
+      }
+
+      this.broadcastWebSocket.onerror = (error) => {
+        console.error('WebSocket 错误:', error)
+        this.$message.error('WebSocket 连接失败')
+        this.broadcastStatus = -1
+      }
+
+      this.broadcastWebSocket.onclose = () => {
+        console.log('WebSocket 连接关闭')
+        this.broadcastStatus = -1
+      }
+    },
+    captureAudioAndSend() {
+      // 请求麦克风权限并采集音频
+      navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+        .then((stream) => {
+          this.mediaStream = stream
+          console.log('音频流获取成功')
+
+          // 创建 AudioContext
+          this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: 8000 // 使用 8kHz 采样率
           })
 
-          this.broadcastRtc.on(ZLMRTCClient.Events.WEBRTC_NOT_SUPPORT, (e) => { // 获取到了本地流
-            console.error('不支持webrtc', e)
-            this.$message({
-              showClose: true,
-              message: '不支持webrtc, 无法进行语音喊话',
-              type: 'error'
-            })
-            this.broadcastStatus = -1
-          })
+          // 创建媒体流源
+          const source = this.audioContext.createMediaStreamSource(stream)
 
-          this.broadcastRtc.on(ZLMRTCClient.Events.WEBRTC_ICE_CANDIDATE_ERROR, (e) => { // ICE 协商出错
-            console.error('ICE 协商出错')
-            this.$message({
-              showClose: true,
-              message: 'ICE 协商出错',
-              type: 'error'
-            })
-            this.broadcastStatus = -1
-          })
+          // 创建脚本处理器来处理音频数据
+          const bufferSize = 4096
+          this.scriptProcessor = this.audioContext.createScriptProcessor(bufferSize, 1, 1)
 
-          this.broadcastRtc.on(ZLMRTCClient.Events.WEBRTC_OFFER_ANWSER_EXCHANGE_FAILED, (e) => { // offer anwser 交换失败
-            console.error('offer anwser 交换失败', e)
-            this.$message({
-              showClose: true,
-              message: 'offer anwser 交换失败' + e,
-              type: 'error'
-            })
-            this.broadcastStatus = -1
-          })
-          this.broadcastRtc.on(ZLMRTCClient.Events.WEBRTC_ON_CONNECTION_STATE_CHANGE, (e) => { // offer anwser 交换失败
-            console.log('状态改变', e)
-            if (e === 'connecting') {
-              this.broadcastStatus = 0
-            } else if (e === 'connected') {
-              this.broadcastStatus = 1
-            } else if (e === 'disconnected') {
-              this.broadcastStatus = -1
+          // 连接节点
+          source.connect(this.scriptProcessor)
+          this.scriptProcessor.connect(this.audioContext.destination)
+
+          // 处理音频数据
+          this.scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
+            const inputData = audioProcessingEvent.inputBuffer.getChannelData(0)
+
+            // 将 Float32 转换为 Int16 PCM 格式
+            const pcmData = new Int16Array(inputData.length)
+            for (let i = 0; i < inputData.length; i++) {
+              let s = Math.max(-1, Math.min(1, inputData[i]))
+              pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
             }
-          })
-          this.broadcastRtc.on(ZLMRTCClient.Events.CAPTURE_STREAM_FAILED, (e) => { // offer anwser 交换失败
-            console.log('捕获流失败', e)
-            this.$message({
-              showClose: true,
-              message: '捕获流失败' + e,
-              type: 'error'
-            })
-            this.broadcastStatus = -1
-          })
-        }).catch(e => {
-          this.$message({
-            showClose: true,
-            message: e,
-            type: 'error'
-          })
+
+            // 通过 WebSocket 发送音频数据
+            if (this.broadcastWebSocket && this.broadcastWebSocket.readyState === WebSocket.OPEN) {
+              this.broadcastWebSocket.send(pcmData.buffer)
+            }
+          }
+
+          this.broadcastStatus = 1
+          this.$message.success('语音对讲已开始')
+        })
+        .catch((error) => {
+          console.error('获取音频流失败:', error)
+          this.$message.error('无法获取麦克风权限')
           this.broadcastStatus = -1
         })
     },
-    stopBroadcast() {
-      this.broadcastRtc.close()
+    stopWebSocketAudio() {
+      // 停止脚本处理器
+      if (this.scriptProcessor) {
+        this.scriptProcessor.disconnect()
+        this.scriptProcessor = null
+      }
+
+      // 停止音频流
+      if (this.mediaStream) {
+        this.mediaStream.getTracks().forEach(track => track.stop())
+        this.mediaStream = null
+      }
+
+      // 关闭 AudioContext
+      if (this.audioContext) {
+        this.audioContext.close()
+        this.audioContext = null
+      }
+
+      // 关闭 WebSocket 连接
+      if (this.broadcastWebSocket) {
+        this.broadcastWebSocket.close()
+        this.broadcastWebSocket = null
+      }
+
       this.broadcastStatus = -1
-      this.$store.dispatch('jtDevice/stopTalk', {
-        phoneNumber: this.deviceId,
-        channelId: this.channelId
-      })
+      console.log('语音对讲已停止')
     }
   }
 }
