@@ -73,8 +73,13 @@ jobs:
           fi
           echo "BRANCH_NAME=${BRANCH_NAME}"
           
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          ZIP_FILE_NAME="${BRANCH_NAME}-${TAG_NAME}.zip"
+          # tag 推送用 tag 名；分支推送用短 commit，避免 refs/heads/ 带斜杠导致 zip 建文件失败
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION_NAME="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION_NAME="${GITHUB_SHA:0:7}"
+          fi
+          ZIP_FILE_NAME="${BRANCH_NAME}-${VERSION_NAME}.zip"
           zip -r "$ZIP_FILE_NAME" release
           echo "ZIP_FILE_NAME=$ZIP_FILE_NAME" >> $GITHUB_ENV
 
