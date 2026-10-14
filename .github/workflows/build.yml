@@ -15,7 +15,10 @@ jobs:
     strategy:
       matrix:
         arch: [amd64]
-      max-parallel: 1 # 最大并行数
+        # separated: JAR + 独立 static 目录
+        # integrated: 前端写入 static 后打进 JAR（前后端不分离）
+        package: [separated, integrated]
+      max-parallel: 2
     steps:
       - name: Checkout
         uses: actions/checkout@v4 # github action运行环境
@@ -44,11 +47,28 @@ jobs:
       - name: clean maven cache
         run: rm -rf ~/.m2/repository/io/github/git-commit-id
 
-      - name: Build Backend
+      # --- integrated: 先前端写入 static，再打 JAR ---
+      - name: Compile frontend (integrated)
+        if: matrix.package == 'integrated'
         run: |
+          cd ./web
+          npm install
+          npm run build:prod
+          cd ../
+
+      - name: Build Backend (integrated)
+        if: matrix.package == 'integrated'
+        run: mvn clean package
+
+      # --- separated: 先打 JAR，再编前端，static 与 JAR 分开打包 ---
+      - name: Build Backend (separated)
+        if: matrix.package == 'separated'
+        run: |
+          rm -rf ./src/main/resources/static
           mvn clean package
 
-      - name: Compile frontend
+      - name: Compile frontend (separated)
+        if: matrix.package == 'separated'
         run: |
           cd ./web
           npm install
@@ -57,10 +77,13 @@ jobs:
 
       - name: Package Files
         run: |
-          cp -r ./src/main/resources/static release/  # 复制前端文件
-          cp ./target/*.jar release/     # 复制 JAR 文件
+          cp ./target/*.jar release/
           cp ./src/main/resources/application-dev.yml release/application.yml
-          
+
+          if [[ "${{ matrix.package }}" == "separated" ]]; then
+            cp -r ./src/main/resources/static release/
+          fi
+
           # tag 推送时 base_ref 常为空；分支推送时用 github.ref
           BRANCH="${{ github.event.base_ref }}"
           if [[ -z "$BRANCH" ]]; then
@@ -72,17 +95,18 @@ jobs:
             BRANCH_NAME="${{ github.event.repository.default_branch }}"
           fi
           echo "BRANCH_NAME=${BRANCH_NAME}"
-          
+
           # tag 推送用 tag 名；分支推送用短 commit，避免 refs/heads/ 带斜杠导致 zip 建文件失败
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             VERSION_NAME="${GITHUB_REF#refs/tags/}"
           else
             VERSION_NAME="${GITHUB_SHA:0:7}"
           fi
-          ZIP_FILE_NAME="${BRANCH_NAME}-${VERSION_NAME}.zip"
+          PACKAGE_MODE="${{ matrix.package }}"
+          ZIP_FILE_NAME="${BRANCH_NAME}-${VERSION_NAME}-${PACKAGE_MODE}.zip"
           zip -r "$ZIP_FILE_NAME" release
           echo "ZIP_FILE_NAME=$ZIP_FILE_NAME" >> $GITHUB_ENV
-          echo "ARTIFACT_NAME=${BRANCH_NAME}-${VERSION_NAME}" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=${BRANCH_NAME}-${VERSION_NAME}-${PACKAGE_MODE}" >> $GITHUB_ENV
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
