@@ -82,6 +82,15 @@ jobs:
           ZIP_FILE_NAME="${BRANCH_NAME}-${VERSION_NAME}.zip"
           zip -r "$ZIP_FILE_NAME" release
           echo "ZIP_FILE_NAME=$ZIP_FILE_NAME" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=${BRANCH_NAME}-${VERSION_NAME}" >> $GITHUB_ENV
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ZIP_FILE_NAME }}
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Release
         uses: softprops/action-gh-release@v2
