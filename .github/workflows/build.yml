@@ -1,7 +1,5 @@
 name: release-ubuntu
 
-# 编译流程参考: https://doc.wvp-pro.cn/#/_content/introduction/compile
-# 5.2 编译前端 → 5.3 mvn package (jar) / 5.4 mvn package -P war
 
 on:
   push:
@@ -15,21 +13,19 @@ jobs:
   build-ubuntu:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         arch: [amd64]
-        # integrated: 官方推荐，前端进 static 后打进 jar（前后端不分离）
-        # separated: jar 与 static 分开放置（前后端分离部署）
-        # war: 官方 5.4，mvn package -P war
-        package: [integrated, separated, war]
-      max-parallel: 3
+        # separated: JAR + 独立 static 目录
+        # integrated: 前端写入 static 后打进 JAR（前后端不分离）
+        package: [separated, integrated]
+      max-parallel: 2
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4 # github action运行环境
 
-      - name: Create release
+      - name: Create release # 创建文件夹
         run: |
-          rm -rf release
+          rm -rf release 
           mkdir release
           echo ${{ github.sha }} > Release.txt
           cp Release.txt LICENSE release/
@@ -38,98 +34,69 @@ jobs:
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
+          # Eclipse基金会维护的开源Java发行版 因为github action参考java的用这个 所以用这个
+          # 还有microsoft(微软维护的openjdk发行版) oracle(商用SDK)等
           distribution: 'temurin'
           java-version: '21'
-          cache: maven
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+          node-version: '20.x' # Node.js版本 20系列的最新稳定版
 
       - name: clean maven cache
         run: rm -rf ~/.m2/repository/io/github/git-commit-id
 
-      # 文档 5.2：编译前端（输出到 src/main/resources/static）
-      - name: Compile frontend
-        if: matrix.package != 'separated'
+      # --- integrated: 先前端写入 static，再打 JAR ---
+      - name: Compile frontend (integrated)
+        if: matrix.package == 'integrated'
         run: |
           cd ./web
-          npm --registry=https://registry.npmmirror.com install
+          npm install
           npm run build:prod
-          test -d ../src/main/resources/static
           cd ../
 
-      # 文档 5.3：生成可执行 jar（前端已在 static 内）
       - name: Build Backend (integrated)
         if: matrix.package == 'integrated'
-        run: mvn -B clean package -DskipTests
+        run: mvn clean package
 
-      # 文档 5.4：生成 war
-      - name: Build Backend (war)
-        if: matrix.package == 'war'
-        run: mvn -B clean package -P war -DskipTests
-
-      # 前后端分离：先打不含前端的 jar，再编前端，static 单独打包
+      # --- separated: 先打 JAR，再编前端，static 与 JAR 分开打包 ---
       - name: Build Backend (separated)
         if: matrix.package == 'separated'
         run: |
           rm -rf ./src/main/resources/static
-          mvn -B clean package -DskipTests
+          mvn clean package
 
       - name: Compile frontend (separated)
         if: matrix.package == 'separated'
         run: |
           cd ./web
-          npm --registry=https://registry.npmmirror.com install
+          npm install
           npm run build:prod
-          test -d ../src/main/resources/static
           cd ../
 
       - name: Package Files
         run: |
-          set -euo pipefail
+          cp ./target/*.jar release/
+          cp ./src/main/resources/application-dev.yml release/application.yml
 
-          # 优先使用 maven 复制到 target 的配置与脚本（与本地 target 运行方式一致）
-          if [[ -f ./target/application-dev.yml ]]; then
-            cp ./target/application-dev.yml release/application.yml
-          else
-            cp ./src/main/resources/application-dev.yml release/application.yml
-          fi
-          if [[ -f ./target/install.sh ]]; then
-            cp ./target/install.sh release/
-          elif [[ -f ./src/main/resources/install.sh ]]; then
-            cp ./src/main/resources/install.sh release/
+          if [[ "${{ matrix.package }}" == "separated" ]]; then
+            cp -r ./src/main/resources/static release/
           fi
 
-          case "${{ matrix.package }}" in
-            integrated)
-              cp ./target/wvp-pro-*.jar release/ 2>/dev/null || cp ./target/*.jar release/
-              ;;
-            war)
-              cp ./target/wvp-pro-*.war release/ 2>/dev/null || cp ./target/*.war release/
-              ;;
-            separated)
-              cp ./target/wvp-pro-*.jar release/ 2>/dev/null || cp ./target/*.jar release/
-              cp -r ./src/main/resources/static release/
-              ;;
-          esac
-
-          # 去掉可能误拷的 sources/javadoc
-          rm -f release/*-sources.jar release/*-javadoc.jar
-
+          # tag 推送时 base_ref 常为空；分支推送时用 github.ref
           BRANCH="${{ github.event.base_ref }}"
           if [[ -z "$BRANCH" ]]; then
             BRANCH="${{ github.ref }}"
           fi
           BRANCH_NAME="${BRANCH#refs/heads/}"
+          # 仍不是分支名（例如 refs/tags/...）时，回退到默认分支
           if [[ "$BRANCH_NAME" == refs/* || -z "$BRANCH_NAME" ]]; then
             BRANCH_NAME="${{ github.event.repository.default_branch }}"
           fi
           echo "BRANCH_NAME=${BRANCH_NAME}"
 
+          # tag 推送用 tag 名；分支推送用短 commit，避免 refs/heads/ 带斜杠导致 zip 建文件失败
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             VERSION_NAME="${GITHUB_REF#refs/tags/}"
           else
@@ -138,8 +105,8 @@ jobs:
           PACKAGE_MODE="${{ matrix.package }}"
           ZIP_FILE_NAME="${BRANCH_NAME}-${VERSION_NAME}-${PACKAGE_MODE}.zip"
           zip -r "$ZIP_FILE_NAME" release
-          echo "ZIP_FILE_NAME=$ZIP_FILE_NAME" >> "$GITHUB_ENV"
-          echo "ARTIFACT_NAME=${BRANCH_NAME}-${VERSION_NAME}-${PACKAGE_MODE}" >> "$GITHUB_ENV"
+          echo "ZIP_FILE_NAME=$ZIP_FILE_NAME" >> $GITHUB_ENV
+          echo "ARTIFACT_NAME=${BRANCH_NAME}-${VERSION_NAME}-${PACKAGE_MODE}" >> $GITHUB_ENV
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
@@ -149,21 +116,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # tag 推送时汇总三种产物发布到 GitHub Releases，避免 matrix 并发写 Release 冲突
-  release:
-    needs: build-ubuntu
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
       - name: Release
         uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: artifacts/*.zip
+          files: ${{ env.ZIP_FILE_NAME }}
