@@ -391,12 +391,14 @@ public class PlayServiceImpl implements IPlayService {
             return inviteInfoForConfirm.getSsrcInfo();
         }
 
-        String streamId = String.format("%s_%s", device.getDeviceId(), channel.getDeviceId());
-
         try {
             SSRCInfo ssrcInfo = receiveRtpServerService.openGbRTPServerForPlay(mediaServer, device, channel, ssrc,
                     record != null ? record : userSetting.getRecordSip(),
                     (code, msg, result) -> {
+                // ABL 为 SSRC 十六进制；ZLM 为设备_通道
+                String mediaStreamId = (result != null && result.getSsrcInfo() != null && result.getSsrcInfo().getStream() != null)
+                        ? result.getSsrcInfo().getStream()
+                        : String.format("%s_%s", device.getDeviceId(), channel.getDeviceId());
                 try {
                     if (code == InviteErrorCode.SUCCESS.getCode() && result != null && result.getHookData() != null) {
                         // hook 响应
@@ -415,18 +417,18 @@ public class PlayServiceImpl implements IPlayService {
 
                         log.info("[点播成功] 设备编号: {}, 通道编号:{}, 码流类型：{}", device.getDeviceId(), channel.getDeviceId(),
                                 channel.getStreamIdentification());
-                        snapOnPlay(result.getHookData().getMediaServer(), device.getDeviceId(), channel.getDeviceId(), streamId);
+                        snapOnPlay(result.getHookData().getMediaServer(), device.getDeviceId(), channel.getDeviceId(), streamInfo.getStream());
                     }else {
                         inviteStreamService.call(InviteSessionType.PLAY, channel.getId(), null, code, msg, null);
                         inviteStreamService.removeInviteInfoByDeviceAndChannel(InviteSessionType.PLAY, channel.getId());
-                        SsrcTransaction ssrcTransaction = sessionManager.getSsrcTransactionByStream(MediaStreamUtil.RTP_APP, streamId);
+                        SsrcTransaction ssrcTransaction = sessionManager.getSsrcTransactionByStream(MediaStreamUtil.RTP_APP, mediaStreamId);
                         if (ssrcTransaction != null) {
                             try {
-                                cmder.streamByeCmd(device, channel.getDeviceId(), MediaStreamUtil.RTP_APP, streamId, null, null);
+                                cmder.streamByeCmd(device, channel.getDeviceId(), MediaStreamUtil.RTP_APP, mediaStreamId, null, null);
                             } catch (InvalidArgumentException | ParseException | SipException | SsrcTransactionNotFoundException e) {
                                 log.error("[点播超时]， 发送BYE失败 {}", e.getMessage());
                             } finally {
-                                sessionManager.removeByStream(MediaStreamUtil.RTP_APP, streamId);
+                                sessionManager.removeByStream(MediaStreamUtil.RTP_APP, mediaStreamId);
                             }
                         }
                     }
@@ -1230,7 +1232,22 @@ public class PlayServiceImpl implements IPlayService {
 
 
     public StreamInfo onPublishHandler(MediaServer mediaServerItem, MediaInfo mediaInfo, Device device, DeviceChannel channel) {
-        StreamInfo streamInfo = mediaServerService.getStreamInfoByAppAndStream(mediaServerItem, MediaStreamUtil.RTP_APP, mediaInfo.getStream(), mediaInfo, null);
+        // ABL：播放地址使用媒体实际流名（SSRC 十六进制，如 064230E9）
+        // ZLM：优先使用 invite 中的设备_通道流名
+        String stream = mediaInfo.getStream();
+        if (mediaServerItem != null && !"abl".equalsIgnoreCase(mediaServerItem.getType())) {
+            InviteInfo inviteInfo = inviteStreamService.getInviteInfoByDeviceAndChannel(InviteSessionType.PLAY, channel.getId());
+            if (inviteInfo == null) {
+                inviteInfo = inviteStreamService.getInviteInfoByDeviceAndChannel(InviteSessionType.PLAYBACK, channel.getId());
+            }
+            if (inviteInfo == null) {
+                inviteInfo = inviteStreamService.getInviteInfoByDeviceAndChannel(InviteSessionType.DOWNLOAD, channel.getId());
+            }
+            if (inviteInfo != null && inviteInfo.getStream() != null) {
+                stream = inviteInfo.getStream();
+            }
+        }
+        StreamInfo streamInfo = mediaServerService.getStreamInfoByAppAndStream(mediaServerItem, MediaStreamUtil.RTP_APP, stream, mediaInfo, null);
         streamInfo.setDeviceId(device.getDeviceId());
         streamInfo.setChannelId(channel.getId());
         return streamInfo;

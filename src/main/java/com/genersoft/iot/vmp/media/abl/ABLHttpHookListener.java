@@ -129,31 +129,38 @@ public class ABLHttpHookListener {
     }
 
     /**
-     * rtsp/rtmp/rtp推流鉴权事件。
+     * 某一个码流接入流媒体服务器时产生的推流鉴权事件。
+     * 需返回 enable_audio / enable_mp4 / stream_replace 等参数，国标多端口收流时靠 stream_replace
+     * 将 SSRC 十六进制流名改为 deviceId_channelId，否则点播订阅无法命中。
      */
     @ResponseBody
     @PostMapping(value = "/on_publish", produces = "application/json;charset=UTF-8")
-    public HookResult onPublish(@RequestBody OnPublishABLHookParam param) {
+    public HookResultForOnPublish onPublish(@RequestBody OnPublishABLHookParam param) {
 
-
-        logger.info("[ABL HOOK] 推流鉴权：{}->{}/{}?{}", param.getMediaServerId(), param.getApp(), param.getStream(), param.getParams());
-        // TODO 加快处理速度
+        logger.info("[ABL HOOK] 推流鉴权：{}->{}", param.getMediaServerId(), param);
 
         MediaServer mediaServer = mediaServerService.getOne(param.getMediaServerId());
         if (mediaServer == null) {
-            return new HookResultForOnPublish(0, "success");
+            logger.warn("[ABL HOOK]推流鉴权 响应：{}->找不到对应的mediaServer", param.getMediaServerId());
+            return HookResultForOnPublish.Fail();
         }
 
         try {
-            ResultForOnPublish resultForOnPublish = mediaService.authenticatePublish(mediaServer, param.getApp(), param.getStream(), param.getParams());
-            if (resultForOnPublish == null) {
-                logger.info("[ABL HOOK]推流鉴权 拒绝 响应：{}->{}", param.getMediaServerId(), param);
-                ablresTfulUtils.closeStreams(mediaServer, param.getApp(), param.getStream());
+            ResultForOnPublish resultForOnPublish = mediaService.authenticatePublish(
+                    mediaServer, param.getApp(), param.getStream(), param.getParams());
+            if (resultForOnPublish != null) {
+                HookResultForOnPublish successResult = HookResultForOnPublish.getInstance(resultForOnPublish);
+                logger.info("[ABL HOOK]推流鉴权-允许-响应：{}->{}->>>>{}", param.getMediaServerId(), param, successResult);
+                return successResult;
             }
-        }catch (ControllerException e) {
+            logger.info("[ABL HOOK]推流鉴权 拒绝 响应：{}->{}", param.getMediaServerId(), param);
             ablresTfulUtils.closeStreams(mediaServer, param.getApp(), param.getStream());
+            return HookResultForOnPublish.Fail();
+        } catch (ControllerException e) {
+            logger.info("[ABL HOOK]推流鉴权 异常拒绝：{}->{}，{}", param.getMediaServerId(), param, e.getMessage());
+            ablresTfulUtils.closeStreams(mediaServer, param.getApp(), param.getStream());
+            return HookResultForOnPublish.Fail();
         }
-        return HookResult.SUCCESS();
     }
 
     /**
@@ -231,6 +238,17 @@ public class ABLHttpHookListener {
         MediaServer mediaServer = mediaServerService.getOne(param.getMediaServerId());
         if (mediaServer == null) {
             return HookResult.SUCCESS();
+        }
+
+        // 若 ABL 未按 on_publish 的 stream_replace 改名，则按鉴权缓存做流名映射，保证点播订阅能命中
+        if (MediaStreamUtil.RTP_APP.equals(param.getApp()) && !ObjectUtils.isEmpty(param.getStream())) {
+            ResultForOnPublish authInfo = mediaService.authenticatePublish(
+                    mediaServer, param.getApp(), param.getStream(), null);
+            if (authInfo != null && !ObjectUtils.isEmpty(authInfo.getStream_replace())
+                    && !authInfo.getStream_replace().equals(param.getStream())) {
+                logger.info("[ABL HOOK] 码流ID映射 {}/{} -> {}", param.getApp(), param.getStream(), authInfo.getStream_replace());
+                param.setStream(authInfo.getStream_replace());
+            }
         }
 
         logger.info("[ABL HOOK] 码流到达, {}->{}/{}", param.getMediaServerId(), param.getApp(), param.getStream());
